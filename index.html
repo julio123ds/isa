@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Procesador CSV / Excel</title>
+
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+<style>
+body {
+    font-family: Inter, Arial, sans-serif;
+    background: #f4f6f8;
+    margin: 0;
+    padding: 20px;
+}
+
+.container {
+    max-width: 1200px;
+    margin: auto;
+    background: #fff;
+    border-radius: 14px;
+    padding: 24px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.1);
+}
+
+h1 {
+    text-align: center;
+    margin-bottom: 20px;
+}
+
+input[type=file] {
+    display: none;
+}
+
+.upload {
+    border: 2px dashed #1976d2;
+    padding: 30px;
+    border-radius: 12px;
+    text-align: center;
+    cursor: pointer;
+    margin-bottom: 20px;
+    font-weight: 600;
+}
+
+button {
+    padding: 12px 20px;
+    border: none;
+    border-radius: 10px;
+    background: #1976d2;
+    color: #fff;
+    font-size: 16px;
+    cursor: pointer;
+    margin-top: 10px;
+}
+
+button:hover {
+    opacity: .9;
+}
+
+.preview {
+    max-height: 300px;
+    overflow: auto;
+    border: 1px solid #ddd;
+    margin-top: 20px;
+    border-radius: 6px;
+}
+
+table {
+    border-collapse: collapse;
+    width: 100%;
+}
+
+th, td {
+    border: 1px solid #ccc;
+    padding: 6px;
+    font-size: 13px;
+}
+
+th {
+    background: #eee;
+    position: sticky;
+    top: 0;
+}
+
+.removed {
+    background: #ffcccc;
+    text-decoration: line-through;
+    opacity: .6;
+}
+
+.duplicate {
+    background: #fff59d;
+}
+
+.log {
+    margin-top: 20px;
+    background: #111;
+    color: #0f0;
+    padding: 12px;
+    height: 200px;
+    overflow-y: auto;
+    font-family: monospace;
+    font-size: 13px;
+}
+</style>
+</head>
+
+<body>
+<div class="container">
+    <h1>Procesador de Excel / CSV</h1>
+
+    <label class="upload">
+        Clic para subir CSV o XLSX
+        <input type="file" id="fileInput" accept=".csv,.xlsx">
+    </label>
+
+    <button onclick="procesar()">Procesar y descargar CSV</button>
+
+    <div class="preview" id="preview"></div>
+    <div class="log" id="log"></div>
+</div>
+
+<script>
+let rows = [];
+let logBox = document.getElementById("log");
+let preview = document.getElementById("preview");
+
+function log(txt) {
+    logBox.innerHTML += txt + "<br>";
+    logBox.scrollTop = logBox.scrollHeight;
+}
+
+document.getElementById("fileInput").addEventListener("change", e => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    log("Archivo cargado: " + file.name);
+
+    const reader = new FileReader();
+
+    if (file.name.endsWith(".xlsx")) {
+        reader.readAsArrayBuffer(file);
+        reader.onload = ev => {
+            const wb = XLSX.read(ev.target.result, { type: "array" });
+            const ws = wb.Sheets[wb.SheetNames[0]];
+            rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
+            render();
+        };
+    } else {
+        reader.readAsText(file, "utf-8");
+        reader.onload = ev => {
+            const text = ev.target.result.replace(/^\uFEFF/, "");
+            const wb = XLSX.read(text, { type: "string" });
+            const ws = wb.Sheets[wb.SheetNames[0]];
+            rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
+            render();
+        };
+    }
+});
+
+function render(highlight = {}) {
+    if (!rows.length) return;
+
+    let html = "<table><thead><tr><th>#</th>";
+    rows[0].forEach((_, i) => html += `<th>${String.fromCharCode(65+i)}</th>`);
+    html += "</tr></thead><tbody>";
+
+    rows.forEach((r, i) => {
+        html += `<tr class="${highlight.row === i ? 'removed':''}"><td>${i+1}</td>`;
+        r.forEach((c, j) => {
+            let cls = "";
+            if (highlight.col === j) cls = "removed";
+            if (highlight.dup && highlight.dup === i) cls = "duplicate";
+            html += `<td class="${cls}">${c ?? ""}</td>`;
+        });
+        html += "</tr>";
+    });
+
+    html += "</tbody></table>";
+    preview.innerHTML = html;
+}
+
+function sleep(ms) {
+    return new Promise(r => setTimeout(r, ms));
+}
+
+async function procesar() {
+    if (!rows.length) return alert("Carga un archivo primero");
+
+    log("Eliminando fila 1...");
+    render({ row: 0 });
+    await sleep(600);
+    rows.shift();
+    render();
+
+    log("Eliminando columna B...");
+    for (let i=0;i<rows.length;i++) rows[i].splice(1,1);
+    render({ col: 1 });
+    await sleep(600);
+    render();
+
+    log("Eliminando columnas K a O...");
+    for (let i=0;i<rows.length;i++) rows[i].splice(9,5);
+    render();
+    await sleep(600);
+
+    log("Procesando SKU duplicados...");
+    let map = {};
+    for (let i=1;i<rows.length;i++) {
+        let sku = rows[i][0];
+        if (!sku) continue;
+
+        if (!map[sku]) {
+            map[sku] = 0;
+        } else {
+            map[sku]++;
+            const suf = String.fromCharCode(96 + map[sku]);
+            rows[i][0] = sku + suf;
+            render({ dup: i });
+            await sleep(300);
+        }
+    }
+
+    log("Generando CSV UTF-8...");
+    descargarCSV();
+}
+
+function descargarCSV() {
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    const csv = XLSX.utils.sheet_to_csv(ws, { FS: ",", RS: "\n" });
+    const BOM = "\uFEFF";
+    const blob = new Blob([BOM + csv], { type: "text/csv;charset=utf-8;" });
+
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "resultado.csv";
+    a.click();
+
+    log("Archivo descargado correctamente.");
+}
+</script>
+</body>
+</html>
